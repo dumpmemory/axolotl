@@ -19,6 +19,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 
 from axolotl.common.cli import TrainerCliArgs
+from axolotl.core.tokenizer_utils import fix_untrained_tokens
 from axolotl.logging_config import configure_logging
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.freeze import freeze_layers_except
@@ -52,6 +53,15 @@ class TrainDatasetMeta:
 def train(
     *, cfg: DictDefault, cli_args: TrainerCliArgs, dataset_meta: TrainDatasetMeta
 ) -> Tuple[Union[PeftModel, PreTrainedModel], PreTrainedTokenizer]:
+    # enable expandable segments for cuda allocation to improve VRAM usage
+    torch_version = torch.__version__.split(".")
+    torch_major, torch_minor = int(torch_version[0]), int(torch_version[1])
+    if torch_major == 2 and torch_minor >= 2:
+        if os.getenv("PYTORCH_CUDA_ALLOC_CONF") is None:
+            os.environ[
+                "PYTORCH_CUDA_ALLOC_CONF"
+            ] = "expandable_segments:True,roundup_power2_divisions:16"
+
     # load the tokenizer first
     LOG.debug(
         f"loading tokenizer... {cfg.tokenizer_config or cfg.base_model_config}",
@@ -113,6 +123,13 @@ def train(
         tokenizer,
         total_num_steps,
     )
+
+    if cfg.fix_untrained_tokens:
+        fix_untrained_tokens(model, tokenizer, train_dataset)
+        if cfg.local_rank == 0:
+            model.save_pretrained(
+                str(Path(cfg.output_dir)), safe_serialization=safe_serialization
+            )
 
     # go ahead and presave, so we have the adapter config available to inspect
     if peft_config:
@@ -195,26 +212,23 @@ def train(
     elif cfg.deepspeed and is_deepspeed_zero3_enabled():
         # Copied over from: https://github.com/huggingface/accelerate/blob/5ae611118057232f441055f7ef9ba0b0f2b8d533/docs/source/usage_guides/deepspeed.md#saving-and-loading
         trainer.accelerator.wait_for_everyone()
-        unwrapped_model = trainer.accelerator.unwrap_model(trainer.model_wrapped)
+        trainer.save_model(cfg.output_dir)
 
         # the trainer saved a model.safetensors file in the output directory,
-        # but it is a proxy model and should be deleted
-        if os.path.exists(os.path.join(cfg.output_dir, "model.safetensors")):
+        # but it is most likely a proxy model and if so, should be deleted
+        maybe_proxy = os.path.exists(os.path.join(cfg.output_dir, "model.safetensors"))
+        maybe_sharded = os.path.exists(
+            os.path.join(cfg.output_dir, "model.safetensors.index.json")
+        )
+
+        if maybe_proxy and maybe_sharded:
             LOG.info(f"Deleting {os.path.join(cfg.output_dir, 'model.safetensors')}")
             LOG.info("This is a proxy model and should be deleted")
-            os.remove(os.path.join(cfg.output_dir, "model.safetensors"))
+            try:
+                os.remove(os.path.join(cfg.output_dir, "model.safetensors"))
+            except FileNotFoundError:
+                pass
 
-        # Saves the whole/unpartitioned fp16 model when in ZeRO Stage-3 to the output directory if
-        # `stage3_gather_16bit_weights_on_model_save` is True in DeepSpeed Config file or
-        # `zero3_save_16bit_model` is True in DeepSpeed Plugin.
-        # For Zero Stages 1 and 2, models are saved as usual in the output directory.
-        # The model name saved is `pytorch_model.bin`
-        unwrapped_model.save_pretrained(
-            cfg.output_dir,
-            is_main_process=trainer.accelerator.is_main_process,
-            save_function=trainer.accelerator.save,
-            state_dict=trainer.accelerator.get_state_dict(trainer.model_wrapped),
-        )
     elif cfg.local_rank == 0:
         if cfg.flash_optimum and BetterTransformer:
             model = BetterTransformer.reverse(model)
