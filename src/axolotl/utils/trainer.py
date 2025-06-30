@@ -381,6 +381,7 @@ def process_pretraining_datasets_for_packing(
     if not skip_position_ids:
         train_dataset = train_dataset.map(
             add_position_ids,
+            batched=True,
             desc="Add position_id column (Pretraining Sample Packing)",
         )
     if drop_attention_mask:
@@ -467,6 +468,7 @@ def calculate_total_num_steps(cfg, train_dataset, update=True):
                 sequential=cfg.sample_packing_sequentially,
                 drop_last=True,
                 num_processes=cfg.dataset_processes,
+                mp_start_method=cfg.sample_packing_mp_start_method or "fork",
             )
 
             data_loader = DataLoader(

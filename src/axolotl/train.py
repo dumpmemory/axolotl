@@ -218,10 +218,14 @@ def execute_training(
                     gradient_accumulation_steps=cfg.gradient_accumulation_steps,
                     ring_attn_func=cfg.ring_attn_func,
                     heads_k_stride=cfg.heads_k_stride,
+                    gather_outputs=cfg.rl is RLType.GRPO,
                 )
             )
 
         LOG.info("Starting trainer...")
+        # TODO: disabling for now as not compatible with FSDP2 + torchao low bit optimizers
+        # if cfg.bf16:
+        #     torch.set_default_dtype(torch.bfloat16)
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
 

@@ -366,6 +366,12 @@ class AxolotlInputConfig(
             "description": "The maximum length of an input to train with, this should typically be less than 2048 as most models have a token/context limit of 2048"
         },
     )
+    eval_sequence_len: int | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "The maximum length of an input for evaluation. If not specified, defaults to sequence_len"
+        },
+    )
     min_sample_len: int | None = None
     max_prompt_len: int = Field(
         default=512,
@@ -392,6 +398,12 @@ class AxolotlInputConfig(
     sample_packing_sequentially: bool | None = Field(
         default=None,
         json_schema_extra={"description": "Whether to pack samples sequentially"},
+    )
+    sample_packing_mp_start_method: str | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "The multiprocessing start method to use for packing. Should be 'fork', 'spawn' or 'forkserver'"
+        },
     )
     eval_sample_packing: bool | None = Field(
         default=None,
@@ -770,6 +782,12 @@ class AxolotlInputConfig(
         default=None,
         json_schema_extra={
             "description": "Custom jinja template for chat template. This will be only used if chat_template is set to `jinja` or `null` (in which case chat_template is automatically set to `jinja`). Default is null."
+        },
+    )
+    chat_template_kwargs: dict[str, Any] | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "Additional kwargs to pass to the chat template. This is useful for customizing the chat template. For example, you can pass `thinking=False` to add a generation prompt to the chat template."
         },
     )
     eot_tokens: list[str] | None = Field(

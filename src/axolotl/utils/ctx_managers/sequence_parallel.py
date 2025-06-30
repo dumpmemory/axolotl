@@ -12,8 +12,6 @@ from transformers.utils import ModelOutput
 
 from axolotl.monkeypatch.ring_attn import (
     get_ring_attn_group,
-    patch_prepare_data_loader,
-    patch_prepare_device_mesh,
     register_ring_attn,
     update_ring_attn_params,
 )
@@ -174,6 +172,8 @@ class SequenceParallelContextManager:
         ring_attn_func: Which ring attention function to use. Currently unused.
         heads_k_stride: Sequence parallelism K head stride size. Passed through to
             `varlen_llama3` `ring_flash_attn` implementation.
+        gather_outputs: Whether to gather outputs after model forward pass across the
+            sequence parallel group.
     """
 
     def __init__(
@@ -183,12 +183,15 @@ class SequenceParallelContextManager:
         gradient_accumulation_steps: int,
         ring_attn_func: RingAttnFunc,
         heads_k_stride: int | None,
+        gather_outputs: bool,
     ):
         self.models = models
         self.sequence_parallel_degree = sequence_parallel_degree
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.ring_attn_func = ring_attn_func
         self.heads_k_stride = heads_k_stride
+        self.gather_outputs = gather_outputs
+
         self._register_ring_attn()
 
         # Set distributed info for local rank
@@ -233,12 +236,6 @@ class SequenceParallelContextManager:
             ring_attn_func=self.ring_attn_func,
         )
 
-        # Patches for accelerate functionality
-        patch_prepare_data_loader()
-        patch_prepare_device_mesh(
-            sequence_parallel_degree=self.sequence_parallel_degree
-        )
-
     def _register_model_hooks(self):
         # Forward pre-hook to apply sequence parallelism
         def sequence_parallel_pre_hook(_, args, kwargs):
@@ -277,16 +274,17 @@ class SequenceParallelContextManager:
 
             return output
 
-        # Register both hooks
+        # Register hooks
         for model in self.models:
             self.hook_handles.append(
                 model.register_forward_pre_hook(
                     sequence_parallel_pre_hook, with_kwargs=True
                 )
             )
-            self.hook_handles.append(
-                model.register_forward_hook(sequence_parallel_post_hook)
-            )
+            if self.gather_outputs:
+                self.hook_handles.append(
+                    model.register_forward_hook(sequence_parallel_post_hook)
+                )
 
     def _gather_outputs(self, output: CausalLMOutputWithPast) -> CausalLMOutputWithPast:
         """Gather sharded outputs from all ranks and reconstruct the full tensor."""

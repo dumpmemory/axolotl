@@ -504,6 +504,9 @@ class ModelLoader:
                 # for some reason, this causes the loss to be off by an order of magnitude
                 # but deepspeed needs this still in bfloat16
                 bnb_config["bnb_4bit_quant_storage"] = torch.float32
+            if self.cfg.model_config_type == "falcon_h1":
+                # output projection cannot be quantized for Falcon-H1 models
+                bnb_config["llm_int8_skip_modules"] = ["out_proj"]
 
             if self.cfg.bnb_config_kwargs:
                 bnb_config.update(self.cfg.bnb_config_kwargs)
@@ -518,6 +521,9 @@ class ModelLoader:
             # Exclude mamba blocks from int8 quantization for jamba
             if self.cfg.model_config_type == "jamba":
                 bnb_config["llm_int8_skip_modules"] = ["mamba"]
+            if self.cfg.model_config_type == "falcon_h1":
+                # output projection cannot be quantized for Falcon-H1 models
+                bnb_config["llm_int8_skip_modules"] = ["out_proj"]
             self.model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 **bnb_config,
             )
@@ -770,6 +776,9 @@ class ModelLoader:
         dist_dtype: torch.dtype,
         before_kbit_train_or_finetune: bool,
     ):
+        dest = {"dtype": dist_dtype}
+        if self.cfg.lora_on_cpu:
+            dest["device"] = "cpu"
         for name, module in self.model.named_modules():
             if "norm" in name:
                 module.to(dist_dtype)
@@ -780,4 +789,4 @@ class ModelLoader:
                     # don't upcast lm_head for btlm
                     continue
             if any(m in name for m in embedding_modules) and hasattr(module, "weight"):
-                module.to(dist_dtype)
+                module.to(**dest)
